@@ -2,7 +2,7 @@ from operator import itemgetter
 import streamlit as st
 
 from langchain.document_loaders import UnstructuredFileLoader
-from langchain.embeddings import CacheBackedEmbeddings, OpenAIEmbeddings
+from langchain.embeddings import CacheBackedEmbeddings, OllamaEmbeddings
 from langchain.storage import LocalFileStore
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores.faiss import FAISS
@@ -11,7 +11,7 @@ from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
 from langchain.schema import messages_from_dict, messages_to_dict
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.memory import ConversationSummaryBufferMemory
-from langchain.chat_models import ChatOpenAI
+from langchain.chat_models import ChatOllama
 
 import os
 import json
@@ -51,13 +51,15 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message_box.markdown(self.message)
 
 
-llm = ChatOpenAI(
+llm = ChatOllama(
+    model="mistral:latest",
     temperature=0.1,
     streaming=True,
     callbacks=[ChatCallbackHandler()],
 )
 
-memory_llm = ChatOpenAI(
+memory_llm = ChatOllama(
+    model="mistral:latest",
     temperature=0.1,
 )
 
@@ -108,7 +110,7 @@ def embed_file(file):
     )
     loader = UnstructuredFileLoader(file_path)
     docs = loader.load_and_split(text_splitter=splitter)
-    embeddings = OpenAIEmbeddings()
+    embeddings = OllamaEmbeddings(model="mistral:latest")
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
     vectorstore = FAISS.from_documents(docs, cached_embeddings)
     retriever = vectorstore.as_retriever()
