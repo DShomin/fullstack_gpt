@@ -188,10 +188,6 @@ with st.sidebar:
 
 
 if file:
-    if memory_checkbox:
-        # Load memory
-        memory_dict = load_json(memory_file_path)
-
     retriever = embed_file(file)
     send_message("I'm ready! Ask away!", "ai", save=False)
     restore_memory()
