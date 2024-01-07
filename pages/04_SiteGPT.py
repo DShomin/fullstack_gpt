@@ -1,12 +1,14 @@
-from itertools import chain
 import streamlit as st
+import os
 from langchain.document_loaders import SitemapLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores.faiss import FAISS
-from langchain.embeddings import OpenAIEmbeddings
+from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.prompts import ChatPromptTemplate
 from langchain.chat_models import ChatOpenAI
+
+from langchain.storage import LocalFileStore
 
 st.set_page_config(
     "SiteGPT",
@@ -150,8 +152,69 @@ def load_website(url):
     )
     loader.requests_per_second = 5
     docs = loader.load_and_split(text_splitter=splitter)
-    vector_store = FAISS.from_documents(docs, OpenAIEmbeddings())
+    cache_dir = LocalFileStore(f"./.cache/embeddings/Site/{url}")
+    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
+        OpenAIEmbeddings(), cache_dir
+    )
+    vector_store = FAISS.from_documents(docs, cached_embeddings)
     return vector_store.as_retriever()
+
+
+def store_emb_history(question, answer):
+    if "history_db" in st.session_state:
+        vector_store = st.session_state["history_db"]
+        vector_store.add_texts([question], metadatas=[{"answer": answer}])
+    else:
+        vector_store = FAISS.from_texts(
+            [question], OpenAIEmbeddings(), metadatas=[{"answer": answer}]
+        )
+        st.session_state["history_db"] = vector_store
+    vector_store.save_local("./.cache/embeddings/history")
+
+
+def load_emb_history():
+    # check directory is empty
+    if os.path.exists("./.cache/embeddings/history") and os.listdir(
+        "./.cache/embeddings/history"
+    ):
+        vector_store = FAISS.load_local(
+            "./.cache/embeddings/history", OpenAIEmbeddings()
+        )
+        st.session_state["history_db"] = vector_store
+        return True
+    else:
+        print("DB directory is empty")
+        return False
+
+
+def search_history(query):
+    vector_store = st.session_state["history_db"]
+    result = vector_store.similarity_search_with_score(query)
+    return_list = []
+    for text, score in result:
+        if score < 0.1:
+            return_list.append({"text": text, "score": score})
+
+    return return_list
+
+
+def save_message(message, role):
+    st.session_state["messages"].append({"message": message, "role": role})
+
+
+def send_massage(message, role, save_flag):
+    with st.chat_message(role):
+        st.markdown(message)
+    if save_flag:
+        save_message(message=message, role=role)
+
+
+def paint_messages():
+    if "messages" in st.session_state:
+        for message in st.session_state["messages"]:
+            send_massage(
+                message=message["message"], role=message["role"], save_flag=False
+            )
 
 
 with st.sidebar:
@@ -166,18 +229,39 @@ if url:
             st.error("Write down a Sitempa URL.")
     else:
         retriever = load_website(url)
+        paint_messages()
 
-        query = st.text_input("Ask a question of the website.")
+        message = st.chat_input("Ask a question of the website.")
 
-        if query:
-            chain = (
-                {
-                    "docs": retriever,
-                    "question": RunnablePassthrough(),
-                }
-                | RunnableLambda(get_answers)
-                | RunnableLambda(choose_answer)
-            )
+        if message:
+            send_massage(message, "human", True)
+            history_db_flag = load_emb_history()
+            keep_question = True
+            if history_db_flag:
+                similar_text_list = search_history(message)
+                if len(similar_text_list) != 0:
+                    history_message = "I found this in the history\n\n"
+                    send_massage(history_message, "ai", False)
+                    for similar_text in similar_text_list:
+                        send_massage(
+                            f"Question: {similar_text['text'].page_content}\n\nAnswer: {similar_text['text'].metadata}\n\nScore: {similar_text['score']}\n\n",
+                            "system",
+                            False,
+                        )
+                    keep_question = st.button("Keep your question?")
+            if keep_question:
+                chain = (
+                    {
+                        "docs": retriever,
+                        "question": RunnablePassthrough(),
+                    }
+                    | RunnableLambda(get_answers)
+                    | RunnableLambda(choose_answer)
+                )
 
-            result = chain.invoke(query)
-            st.markdown(result.content.replace("$", "\$"))  # type: ignore
+                result = chain.invoke(message)
+                store_emb_history(message, result.content)
+                send_massage(result.content, "ai", True)
+
+        else:
+            st.session_state["messages"] = []
